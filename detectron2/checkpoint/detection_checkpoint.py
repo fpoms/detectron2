@@ -1,5 +1,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import pickle
+import numpy as np
+import torch
 from fvcore.common.checkpoint import Checkpointer
 from fvcore.common.file_io import PathManager
 
@@ -39,14 +41,19 @@ class DetectionCheckpointer(Checkpointer):
                 data = {k: v for k, v in data.items() if not k.endswith("_momentum")}
                 return {"model": data, "__author__": "Caffe2", "matching_heuristics": True}
 
-        loaded = super()._load_file(filename)  # load native pth checkpoint
+        model_device = next(self.model.parameters()).device
+        loaded = torch.load(filename, map_location=model_device)
         if "model" not in loaded:
             loaded = {"model": loaded}
         return loaded
 
     def _load_model(self, checkpoint):
+        self._convert_ndarray_to_tensor(checkpoint["model"])
         if checkpoint.get("matching_heuristics", False):
-            self._convert_ndarray_to_tensor(checkpoint["model"])
+            model_device = next(self.model.parameters()).device
+            for k in checkpoint["model"].keys():
+                checkpoint["model"][k] = checkpoint["model"][k].clone().to(model_device)
+            #print('model state dict', [(k, x.device) for k, x in model_state_dict.items()])
             # convert weights by name-matching heuristics
             model_state_dict = self.model.state_dict()
             align_and_update_state_dicts(
@@ -56,4 +63,29 @@ class DetectionCheckpointer(Checkpointer):
             )
             checkpoint["model"] = model_state_dict
         # for non-caffe2 models, use standard ways to load it
+        # Move checkpoint to same device as model
         super()._load_model(checkpoint)
+
+    def _convert_ndarray_to_tensor(self, state_dict: dict):
+        """
+        In-place convert all numpy arrays in the state_dict to torch tensor.
+        Args:
+            state_dict (dict): a state-dict to be loaded to the model.
+        """
+        # model could be an OrderedDict with _metadata attribute
+        # (as returned by Pytorch's state_dict()). We should preserve these
+        # properties.
+        model_device = next(self.model.parameters()).device
+        ones = torch.tensor([[1.0, 1.0], [1.0, 1.0]], device=model_device)
+        for k in list(state_dict.keys()):
+            v = state_dict[k]
+            if not isinstance(v, np.ndarray) and not isinstance(
+                v, torch.Tensor
+            ):
+                raise ValueError(
+                    "Unsupported type found in checkpoint! {}: {}".format(
+                        k, type(v)
+                    )
+                )
+            if not isinstance(v, torch.Tensor):
+                state_dict[k] = torch.tensor(v, device=model_device)

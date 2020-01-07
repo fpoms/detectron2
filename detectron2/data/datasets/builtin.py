@@ -18,6 +18,8 @@ To add new dataset, refer to the tutorial "docs/DATASETS.md".
 """
 
 import os
+import json
+import tempfile
 
 from detectron2.data import MetadataCatalog, DatasetCatalog
 from .register_coco import register_coco_instances, register_coco_panoptic_separated
@@ -142,17 +144,81 @@ _PREDEFINED_SPLITS_LVIS = {
     }
 }
 
+# Added for revolver
+_REVOLVER_SPLITS_LVIS = {
+    "lvis_v0.5": [
+        #'cab_(taxi)',
+        #'cowboy_hat',
+        #'cone',
+    ]
+}
+
 
 def register_all_lvis(root="datasets"):
     for dataset_name, splits_per_dataset in _PREDEFINED_SPLITS_LVIS.items():
+        meta = get_lvis_instances_meta(dataset_name)
         for key, (image_root, json_file) in splits_per_dataset.items():
             # Assume pre-defined datasets live in `./datasets`.
             register_lvis_instances(
                 key,
-                get_lvis_instances_meta(dataset_name),
+                meta,
                 os.path.join(root, json_file) if "://" not in json_file else json_file,
                 os.path.join(root, image_root),
             )
+    for dataset_name, categories in _REVOLVER_SPLITS_LVIS.items():
+        meta = get_lvis_instances_meta(dataset_name)
+        for category in categories:
+            keys = [('lvis_v0.5_{:s}_train'.format(category),
+                     "lvis/lvis_v0.5_train.json",
+                     'coco/train2017'),
+                    ('lvis_v0.5_{:s}_val'.format(category),
+                     'lvis_custom/{:s}_exhaustive_lvis_v0.5_val.json'.format(category),
+                     'coco/val2017')]
+            category_id = None
+            for key, base_json_file, image_root in keys:
+                # Remap annotation ids for selected category
+                with open(os.path.join(root, base_json_file), 'r') as f:
+                    json_data = json.load(f)
+
+                new_cat_data = []
+                for cat_data in json_data['categories']:
+                    if cat_data["synonyms"][0] == category:
+                        category_id = cat_data['id']
+                        cat_data['id'] = 0
+                        new_cat_data.append(cat_data)
+                        break
+                assert category_id is not None
+                json_data['categories'] = new_cat_data
+                new_images = []
+                for idx, img in enumerate(json_data['images']):
+                    if category_id in img['neg_category_ids']:
+                        img['neg_category_ids'] = [0]
+                        img['not_exhaustive_category_ids'] = []
+                        new_images.append(img)
+                json_data['images'] = new_images
+
+                new_annotations = []
+                for ann in json_data['annotations']:
+                    if ann['category_id'] == category_id:
+                        ann['category_id'] = 0
+                        new_annotations.append(ann)
+                json_data['annotations'] = new_annotations
+
+                # Write out patched annotations
+                fd, json_file = tempfile.mkstemp('.json')
+                os.close(fd)
+                with open(json_file, 'w') as f:
+                    json.dump(json_data, f)
+                print('Wrote patched LVIS json from {:s} for {:s} to {:s}'.format(
+                    base_json_file, category, json_file))
+
+                # Assume pre-defined datasets live in `./datasets`.
+                register_lvis_instances(
+                    key,
+                    meta,
+                    os.path.join(root, json_file) if "://" not in json_file else json_file,
+                    os.path.join(root, image_root),
+                   )
 
 
 # ==== Predefined splits for raw cityscapes images ===========

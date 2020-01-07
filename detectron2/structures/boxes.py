@@ -295,10 +295,22 @@ def pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
     Returns:
         Tensor: IoU, sized [N,M].
     """
+    orig_device = boxes1.device
+
     area1 = boxes1.area()
     area2 = boxes2.area()
 
     boxes1, boxes2 = boxes1.tensor, boxes2.tensor
+
+    MEM_LIMIT = 200 * 1024 * 1024 # 200 mb
+    mem_usage = (boxes1.shape[0] * boxes2.shape[0] * 7 * 4)
+    cpu = (boxes1.shape[0] * boxes2.shape[0]) > MEM_LIMIT
+    if cpu:
+        area1 = area1.cpu()
+        area2 = area2.cpu()
+        boxes1, boxes2 = boxes1.cpu(), boxes2.cpu()
+        print('Hit box limit ({:f} MB) with {:f} MB, running on CPU'.format(
+            MEM_LIMIT / (1024*1024), mem_usage / (1024*1024)), flush=True)
 
     width_height = torch.min(boxes1[:, None, 2:], boxes2[:, 2:]) - torch.max(
         boxes1[:, None, :2], boxes2[:, :2]
@@ -314,7 +326,7 @@ def pairwise_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
         inter / (area1[:, None] + area2 - inter),
         torch.zeros(1, dtype=inter.dtype, device=inter.device),
     )
-    return iou
+    return iou.to(orig_device)
 
 
 def matched_boxlist_iou(boxes1: Boxes, boxes2: Boxes) -> torch.Tensor:
